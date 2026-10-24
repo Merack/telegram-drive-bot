@@ -45,16 +45,6 @@ func (h *MediaHandler) OnMediaReceived(c tele.Context) error {
 	// Set caption from message
 	fileInfo.Caption = msgIn.Caption
 
-	// Check duplicate first (before forwarding to save API calls)
-	isDup, err := h.fileService.CheckDuplicate(user.ID, fileInfo.FileUniqueID)
-	if err != nil {
-		slog.Error("duplicate check failed", "error", err, "user_id", user.ID, "file_unique_id", fileInfo.FileUniqueID)
-		return c.Send(cat.FileSaveFailed)
-	}
-	if isDup {
-		return c.Send(cat.FileAlreadyExists)
-	}
-
 	msgInfo := &service.MessageInfo{
 		MessageID:    msgIn.ID,
 		ChatID:       msgIn.Chat.ID,

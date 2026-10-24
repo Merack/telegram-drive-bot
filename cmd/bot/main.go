@@ -243,9 +243,13 @@ func serve(b *tele.Bot, fileService *service.FileService, embeddingSvc *service.
 	// 等后台 worker 退出(Start/RunBatch 都监听同一个 ctx)
 	bgWg.Wait()
 
-	// 等异步 forward/delete 跑完, 避免半截事务造成孤儿数据
+	// 等放到 goroutine 里跑的慢 handler(/search /ss /tph /cap_sync)与
+	// 异步 forward/delete 跑完, 避免半截事务造成孤儿数据
 	drainCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	if !bot.WaitAsyncHandlers(drainCtx) {
+		slog.Warn("shutdown timeout, some handlers may not have finished")
+	}
 	fileService.Shutdown(drainCtx)
 
 	return exitCode

@@ -39,7 +39,10 @@ func (c *whitelistCache) get(telegramID int64) *model.User {
 	if !ok || time.Now().After(entry.expiresAt) {
 		return nil
 	}
-	return entry.user
+	// 返回副本: handler 可能在 goroutine 里跑(见 bot.async), 而中间件会在更新循环里
+	// 往同一个 *User 上写 Username/FirstName —— 共享指针就是数据竞争
+	u := *entry.user
+	return &u
 }
 
 func (c *whitelistCache) put(telegramID int64, user *model.User) {
@@ -74,6 +77,12 @@ func Whitelist(userService *service.UserService) tele.MiddlewareFunc {
 					return nil // Not whitelisted, silently ignore
 				}
 				cache.put(sender.ID, user)
+			}
+
+			// 已被 /removeuser 禁用的用户视同不在白名单,静默忽略
+			// 缓存命中时最长 whitelistCacheTTL 后才生效,与角色变更的延迟一致
+			if user.Blocked {
+				return nil
 			}
 
 			// Update user info from Telegram if changed

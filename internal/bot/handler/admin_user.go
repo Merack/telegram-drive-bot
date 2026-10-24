@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"html"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -247,10 +248,12 @@ func (h *AdminUserHandler) sendUserListPage(c tele.Context, page int, isEdit boo
 	sb.WriteString(fmt.Sprintf(cat.UserListHeader, total))
 	for i, u := range users {
 		num := (page-1)*userListPageSize + i + 1
-		icon := service.RoleIcon(u.Role)
+		icon := service.RoleIcon(&u)
 		name := service.DisplayName(&u)
 		roleName := service.FormatRole(lang, u.Role)
-		sb.WriteString(fmt.Sprintf("%d. %s %s (ID: %d) - %s\n", num, icon, name, u.TelegramID, roleName))
+		// 消息以 HTML 模式发出,而 name 来自用户自报的 Telegram 昵称,必须转义
+		// (按钮 label 是纯文本,保持原样)
+		sb.WriteString(fmt.Sprintf("%d. %s %s (ID: %d) - %s\n", num, icon, html.EscapeString(name), u.TelegramID, roleName))
 	}
 
 	markup := &tele.ReplyMarkup{}
@@ -259,7 +262,7 @@ func (h *AdminUserHandler) sendUserListPage(c tele.Context, page int, isEdit boo
 	// User detail buttons, 2 per row.
 	var userBtns []tele.Btn
 	for _, u := range users {
-		icon := service.RoleIcon(u.Role)
+		icon := service.RoleIcon(&u)
 		name := service.DisplayName(&u)
 		userBtns = append(userBtns, markup.Data(
 			fmt.Sprintf("%s %s", name, icon),
@@ -288,13 +291,13 @@ func (h *AdminUserHandler) sendUserListPage(c tele.Context, page int, isEdit boo
 func (h *AdminUserHandler) sendUserInfo(c tele.Context, user, operator *model.User, fileCount int64) error {
 	cat := Cat(c)
 	lang := Lang(c)
-	icon := service.RoleIcon(user.Role)
+	icon := service.RoleIcon(user)
 	name := service.DisplayName(user)
 	roleName := service.FormatRole(lang, user.Role)
 
 	text := fmt.Sprintf(
 		cat.UserInfoCard,
-		name, icon, user.TelegramID, roleName, fileCount, user.CreatedAt.Format(constants.DateDay),
+		html.EscapeString(name), icon, user.TelegramID, roleName, fileCount, user.CreatedAt.Format(constants.DateDay),
 	)
 
 	markup := &tele.ReplyMarkup{}

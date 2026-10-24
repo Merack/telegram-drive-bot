@@ -283,10 +283,6 @@ func (s *EmbeddingService) processFile(ctx context.Context, fileID uint) {
 		slog.Error("embedding: failed to read file", "file_db_id", fileID, "error", err)
 		return
 	}
-	if src == nil {
-		slog.Debug("embedding: file vanished before processing", "file_db_id", fileID)
-		return
-	}
 
 	text := buildEmbeddingInput(src.FileName, src.Title, src.Caption)
 	if text == "" {
