@@ -1,8 +1,9 @@
 name: Docker Image
 
 # 触发条件:
-#   - tag 推送 (v*): 构建并推送 latest + 版本号 tag
+#   - tag 推送 (v*, 须在 main 上): 构建并推送 latest + 版本号 tag
 #   - main 分支推送: 构建并推送 main tag (便于跟踪主分支最新构建)
+#   - dev 分支推送: 构建并推送 beta tag (不会覆盖 latest)
 #   - 手动触发: 用于调试
 on:
   push:
@@ -10,6 +11,7 @@ on:
       - 'v*'
     branches:
       - main
+      - dev
   workflow_dispatch:
 
 permissions:
@@ -23,6 +25,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # 用于校验 tag 是否在 main 上
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -46,8 +50,14 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # 防止误在非 main 的提交上打 v* tag 从而覆盖 latest
+      - name: Verify tag is on main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
       # 自动生成 tag, 同时应用到 GHCR 和 Docker Hub 两个 registry:
       #   - main 分支       -> main
+      #   - dev 分支        -> beta
       #   - v1.2.3 会同时打上4个tag      -> v1.2.3, 1.2.3, 1.2, latest
       - name: Compute image tags
         id: meta
@@ -57,9 +67,10 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/telegram-drive-bot
             docker.io/${{ secrets.DOCKERHUB_USERNAME }}/telegram-drive-bot
           tags: |
-            type=ref,event=branch
+            type=ref,event=branch,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=beta,enable=${{ github.ref == 'refs/heads/dev' }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Build & push
