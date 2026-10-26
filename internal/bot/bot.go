@@ -1,10 +1,12 @@
 package bot
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"tg-drive-bot/internal/bot/handler"
@@ -59,6 +61,45 @@ func newProxyClient(proxyURL string) (*http.Client, error) {
 
 	default:
 		return nil, fmt.Errorf("unsupported proxy scheme: %s (use socks5:// or http://)", parsed.Scheme)
+	}
+}
+
+// asyncHandlerWG 跟踪被 async 放到 goroutine 里的 handler, 供 serve() 退出前 drain
+// (与 handler 在更新循环里同步跑时的效果保持一致: 退出时会等它跑完)
+var asyncHandlerWG sync.WaitGroup
+
+// WaitAsyncHandlers 阻塞到所有异步 handler 跑完, 或 ctx 超时
+// 返回 false 表示超时放弃等待(不强杀 goroutine)
+func WaitAsyncHandlers(ctx context.Context) bool {
+	done := make(chan struct{})
+	go func() {
+		asyncHandlerWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// async 把一个慢 handler 放到 goroutine 里跑并立即返回
+//
+// telebot 在单条更新循环里串行调用 handler, 一次 30s 的网络等待(/tph 抓文章、
+// /search 调 embedding API)或一次全表 UPDATE(/cap_sync)会把所有人的更新卡住。
+// 这层壳只移动执行位置: 中间件仍先同步跑完(白名单仍在更新循环里判定), 错误仍然
+// 交给 bot 的 OnError, 与同步路径表现一致
+func async(b *tele.Bot, h tele.HandlerFunc) tele.HandlerFunc {
+	return func(c tele.Context) error {
+		asyncHandlerWG.Add(1)
+		go func() {
+			defer asyncHandlerWG.Done()
+			if err := h(c); err != nil {
+				b.OnError(err, c)
+			}
+		}()
+		return nil
 	}
 }
 
@@ -118,13 +159,14 @@ func New(cfg *config.Config, userService *service.UserService, fileService *serv
 	// ========== User Commands ==========
 	b.Handle("/start", startHandler.OnStart)
 	b.Handle("/list", listHandler.OnList)
-	b.Handle("/search", searchHandler.OnSearch)
-	b.Handle("/ss", searchHandler.OnQuickSearch)
+	// /search 会等 embedding API, /tph 会等 telegra.ph: 两者都可能卡 30s, 放 goroutine
+	b.Handle("/search", async(b, searchHandler.OnSearch))
+	b.Handle("/ss", async(b, searchHandler.OnQuickSearch))
 	b.Handle("/stats", statsHandler.OnStats)
 	b.Handle("/rand", randomHandler.OnRand)
 	b.Handle("/randv", randomHandler.OnRandVideo)
 	b.Handle("/randp", randomHandler.OnRandPhoto)
-	b.Handle("/tph", telegraphHandler.OnTelegraph)
+	b.Handle("/tph", async(b, telegraphHandler.OnTelegraph))
 	b.Handle("/lang", langHandler.OnLang)
 
 	// ========== Media Events ==========
@@ -200,7 +242,8 @@ func New(cfg *config.Config, userService *service.UserService, fileService *serv
 	owners.Use(middleware.OwnerOnly())
 	owners.Handle("/emb_re", embAdminHandler.OnEmbRe)
 	owners.Handle("/emb_sync", embAdminHandler.OnEmbSync)
-	owners.Handle("/cap_sync", maintAdminHandler.OnCapSync)
+	// cap_sync 是一次跨表 UPDATE, 同步跑会卡住所有人的更新
+	owners.Handle("/cap_sync", async(b, maintAdminHandler.OnCapSync))
 
 	// 注册菜单
 	if err := registerCommandMenus(b); err != nil {

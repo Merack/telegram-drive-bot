@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"html"
 	"log/slog"
 	"strings"
 
@@ -131,11 +132,14 @@ func (h *SearchHandler) sendSearchPage(c tele.Context, userID uint, query, fileT
 }
 
 // formatSearchText composes the search results title and body.
+// query 来自用户输入,而消息以 HTML 模式发出(ModeHTML),必须先转义
+// 否则含 &/</> 的关键词会让 Telegram 直接返回 400,用户什么也收不到
 func formatSearchText(cat *msg.Catalog, lang string, files []model.File, total int64, query string, page int, botUsername string) string {
+	escaped := html.EscapeString(query)
 	if total == 0 {
-		return fmt.Sprintf(cat.SearchEmpty, query)
+		return fmt.Sprintf(cat.SearchEmpty, escaped)
 	}
-	header := fmt.Sprintf(cat.SearchHeader, query, total)
+	header := fmt.Sprintf(cat.SearchHeader, escaped, total)
 	return ui.FormatFileList(lang, header, files, page, util.DefaultPageSize, botUsername)
 }
 

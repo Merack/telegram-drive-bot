@@ -52,6 +52,11 @@ func (s *UserService) AddUser(telegramID int64) (string, error) {
 		return "", err
 	}
 	if existing != nil {
+		// 之前被 /removeuser 禁用的用户:重新添加即恢复访问
+		if existing.Blocked {
+			existing.Blocked = false
+			return "created", s.repo.Update(existing)
+		}
 		return "already_exists", nil
 	}
 
@@ -79,7 +84,11 @@ func (s *UserService) RemoveUser(telegramID int64, operatorRole constants.Role) 
 	if targetRole == constants.RoleAdmin && !operatorRole.IsOwner() {
 		return "only_owner_can_remove_admin", nil
 	}
-	return "removed", s.repo.Delete(target.ID)
+	// 不硬删用户行:files.user_id 有外键指向 users.id(无 ON DELETE),硬删会被数据库拒绝;
+	// 即便删成功,该用户的 files/messages/file_copies 也会变成无归属的孤儿数据。
+	// 改为标记 blocked,访问由白名单中间件拒绝;/adduser 会解除标记。
+	target.Blocked = true
+	return "removed", s.repo.Update(target)
 }
 
 // PromoteUser promotes a user to admin role.
@@ -172,11 +181,6 @@ func (s *UserService) GetByID(id uint) (*model.User, error) {
 	return s.repo.GetByID(id)
 }
 
-// DeleteByTelegramID removes a user by their Telegram user_id.
-func (s *UserService) DeleteByTelegramID(telegramID int64) error {
-	return s.repo.DeleteByTelegramID(telegramID)
-}
-
 // FormatRole returns a localized display name for a role. "Owner" is left
 // untranslated since it's used as a proper noun in both languages.
 func FormatRole(lang, role string) string {
@@ -191,9 +195,13 @@ func FormatRole(lang, role string) string {
 	}
 }
 
-// RoleIcon returns the icon for a role.
-func RoleIcon(role string) string {
-	switch constants.Role(role) {
+// RoleIcon returns the icon for a user: 🚫 when the account is blocked
+// (i.e. removed from the whitelist), otherwise the role icon.
+func RoleIcon(user *model.User) string {
+	if user.Blocked {
+		return "🚫"
+	}
+	switch constants.Role(user.Role) {
 	case constants.RoleOwner:
 		return "👑"
 	case constants.RoleAdmin:

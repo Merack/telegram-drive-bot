@@ -3,18 +3,12 @@ package repository
 import (
 	"encoding/json"
 	"errors"
-	"math/rand/v2"
 	"time"
 
 	"tg-drive-bot/internal/model"
 
 	"gorm.io/gorm"
 )
-
-// randomSamplingThreshold 是一个行数（记录数）的阈值
-// 在此阈值以下，RandomByUserAndTypes 会使用简单的 ORDER BY RANDOM()以提高性能
-// 当数量超过此阈值时，RandomByUserAndTypes 会切换为基于主键的采样方式
-const randomSamplingThreshold = 500
 
 // FileRepo is the GORM-backed implementation of FileRepository.
 type FileRepo struct {
@@ -117,79 +111,23 @@ func (r *FileRepo) ListByUser(userID uint, fileType string, page, pageSize int) 
 // 返回最多不超过 `limit` 个由 userID 拥有且 file_type 在 fileTypes 中的随机文件
 // 如果符合条件的文件池大小小于 limit，则返回更少的数据行（或空切片）
 //
-// 算法：对于小型文件池（数量 <= randomSamplingThreshold），它会降级使用
-// ORDER BY RANDOM() LIMIT n 以提高查询速度
-// 对于较大的文件池，它会在 [min_id, max_id] 区间内对主键进行随机抽样，并通过
-// "WHERE id >= ? ORDER BY id LIMIT 1" 将每个候选值映射到最邻近的实际数据行，
-// 这样可以兼容由于删除操作导致的 ID 不连续（空洞）
-// 这种抽样机制避免了在大表上使用 ORDER BY RANDOM() 所引发的全局全表扫描，
-// 从而确保随机检索效率不会随着数据量的增长而退化
+// 直接对该用户的行做 ORDER BY RANDOM(): 查询已按 user_id 过滤, 排序只发生在该用户的行上,
+// 一条往返就能拿到真正分散的随机结果。旧实现在大文件池上改成主键采样 + 逐个候选取最近行,
+// 一次 /rand 要跑几十次数据库往返, 远程库上延迟反而更高
+// shortcut: 排序成本随该用户的文件数线性增长, 单用户超过约 10 万条时再改回采样
 func (r *FileRepo) RandomByUserAndTypes(userID uint, fileTypes []string, limit int) ([]model.File, error) {
 	if limit <= 0 || len(fileTypes) == 0 {
 		return nil, nil
 	}
 
-	base := r.db.Model(&model.File{}).
-		Where("user_id = ? AND file_type IN ?", userID, fileTypes)
+	var files []model.File
+	err := r.db.
+		Where("user_id = ? AND file_type IN ?", userID, fileTypes).
+		Order("RANDOM()").
+		Limit(limit).
+		Find(&files).Error
 
-	var total int64
-	if err := base.Count(&total).Error; err != nil {
-		return nil, err
-	}
-	if total == 0 {
-		return nil, nil
-	}
-
-	if total <= randomSamplingThreshold {
-		var files []model.File
-		err := base.Order("RANDOM()").Limit(limit).Find(&files).Error
-		return files, err
-	}
-
-	var bounds struct {
-		MinID uint
-		MaxID uint
-	}
-	if err := base.Select("MIN(id) AS min_id, MAX(id) AS max_id").Scan(&bounds).Error; err != nil {
-		return nil, err
-	}
-	if bounds.MaxID == 0 || bounds.MinID == 0 {
-		return nil, nil
-	}
-
-	// 对候选值进行过采样（超额抽样），以吸收由于删除操作产生的 ID 空洞，
-	// 以及最邻近行解析带来的重复碰撞。即使频繁的删除操作导致 ID 范围变得
-	// 非常稀疏，采用 3 倍数量加上最低 5 个的保底（limit*3 + 5）就足以确保
-	// 可靠地填满所需的 limit 个文件
-	candidateCount := limit*3 + 5
-	span := bounds.MaxID - bounds.MinID + 1
-	seen := make(map[uint]struct{}, limit)
-	results := make([]model.File, 0, limit)
-
-	for attempt := 0; attempt < candidateCount && len(results) < limit; attempt++ {
-		offset := uint(rand.Uint64N(uint64(span)))
-		candidate := bounds.MinID + offset
-
-		var file model.File
-		err := r.db.
-			Where("user_id = ? AND file_type IN ? AND id >= ?", userID, fileTypes, candidate).
-			Order("id ASC").
-			Limit(1).
-			Find(&file).Error
-		if err != nil {
-			return nil, err
-		}
-		if file.ID == 0 {
-			continue
-		}
-		if _, dup := seen[file.ID]; dup {
-			continue
-		}
-		seen[file.ID] = struct{}{}
-		results = append(results, file)
-	}
-
-	return results, nil
+	return files, err
 }
 
 // Search performs full-text search on file_name and caption using PostgreSQL tsvector.
@@ -344,7 +282,7 @@ type EmbeddingSource struct {
 }
 
 // GetEmbeddingSource 读取生成 embedding 所需的文本字段
-// 找不到时返回 (nil, nil), 调用方据此跳过该 fileID
+// 文件不存在时 GORM 的 Scan 不报错, 返回零值结构体 -- 调用方按"文本为空"跳过即可
 func (r *FileRepo) GetEmbeddingSource(fileID uint) (*EmbeddingSource, error) {
 	var src EmbeddingSource
 	err := r.db.Table("files").

@@ -56,16 +56,6 @@ func (r *UserRepo) Update(user *model.User) error {
 	return r.db.Save(user).Error
 }
 
-// Delete: removes a user record by internal ID.
-func (r *UserRepo) Delete(id uint) error {
-	return r.db.Delete(&model.User{}, id).Error
-}
-
-// DeleteByTelegramID removes a user record by Telegram user_id.
-func (r *UserRepo) DeleteByTelegramID(telegramID int64) error {
-	return r.db.Where("telegram_id = ?", telegramID).Delete(&model.User{}).Error
-}
-
 // ListAll returns all users with pagination.
 func (r *UserRepo) ListAll(page, pageSize int) ([]model.User, int64, error) {
 	var users []model.User

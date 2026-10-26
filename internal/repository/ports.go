@@ -7,8 +7,6 @@ type UserRepository interface {
 	GetByTelegramID(telegramID int64) (*model.User, error)
 	GetByID(id uint) (*model.User, error)
 	Update(user *model.User) error
-	Delete(id uint) error
-	DeleteByTelegramID(telegramID int64) error
 	ListAll(page, pageSize int) ([]model.User, int64, error)
 	CountFilesByUserID(userID uint) (int64, error)
 }
